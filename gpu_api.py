@@ -13,37 +13,16 @@ app = Flask(__name__)
 # CONFIG
 # ============================================================
 
-GITHUB_OWNER = os.environ.get(
-    "GITHUB_OWNER",
-    "forgotenmywin"
-)
-
-GITHUB_REPO = os.environ.get(
-    "GITHUB_REPO",
-    "CRD_Win"
-)
-
-GITHUB_WORKFLOW = os.environ.get(
-    "GITHUB_WORKFLOW",
-    "gpu-session.yml"
-)
-
-GITHUB_BRANCH = os.environ.get(
-    "GITHUB_BRANCH",
-    "main"
-)
+GITHUB_OWNER = os.environ.get("GITHUB_OWNER", "forgotenmywin")
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "CRD_Win")
+GITHUB_WORKFLOW = os.environ.get("GITHUB_WORKFLOW", "gpu-session.yml")
+GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-
-PUBLIC_API_URL = os.environ.get(
-    "PUBLIC_API_URL"
-)
+PUBLIC_API_URL = os.environ.get("PUBLIC_API_URL")
 
 SESSION_SECONDS = int(
-    os.environ.get(
-        "SESSION_SECONDS",
-        "600"
-    )
+    os.environ.get("SESSION_SECONDS", "1200")
 )
 
 GITHUB_API = "https://api.github.com"
@@ -54,14 +33,10 @@ GITHUB_API = "https://api.github.com"
 # ============================================================
 
 if not GITHUB_TOKEN:
-    raise RuntimeError(
-        "GITHUB_TOKEN is missing"
-    )
+    raise RuntimeError("GITHUB_TOKEN is missing")
 
 if not PUBLIC_API_URL:
-    raise RuntimeError(
-        "PUBLIC_API_URL is missing"
-    )
+    raise RuntimeError("PUBLIC_API_URL is missing")
 
 PUBLIC_API_URL = PUBLIC_API_URL.rstrip("/")
 
@@ -76,11 +51,10 @@ HEADERS = {
 
 
 # ============================================================
-# IN-MEMORY SESSION STORE
+# SESSION STORAGE
 # ============================================================
 
 sessions = {}
-
 sessions_lock = threading.Lock()
 
 
@@ -89,19 +63,11 @@ sessions_lock = threading.Lock()
 # ============================================================
 
 def utc_now():
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
-def github_request(
-    method,
-    url,
-    **kwargs
-):
-
+def github_request(method, url, **kwargs):
     try:
-
         return requests.request(
             method,
             url,
@@ -109,44 +75,27 @@ def github_request(
             timeout=30,
             **kwargs
         )
-
     except Exception as e:
-
-        print(
-            "GitHub request error:",
-            repr(e)
-        )
-
+        print("GitHub request error:", repr(e))
         return None
 
 
+def expired(session):
+    return time.time() >= session["expires_at"]
+
+
 def public_session(session):
+    data = dict(session)
 
-    result = dict(session)
+    # NEVER expose these
+    data.pop("worker_token", None)
+    data.pop("commands", None)
 
-    result.pop(
-        "worker_token",
-        None
-    )
-
-    result.pop(
-        "commands",
-        None
-    )
-
-    return result
-
-
-def is_expired(session):
-
-    return (
-        time.time()
-        >= session["expires_at"]
-    )
+    return data
 
 
 # ============================================================
-# FIND GITHUB RUN
+# FIND WORKFLOW RUN
 # ============================================================
 
 def find_workflow_run(session_id):
@@ -173,57 +122,49 @@ def find_workflow_run(session_id):
         return None
 
     if response.status_code != 200:
-
         print(
             "GitHub run list failed:",
             response.status_code,
-            response.text[:1000]
+            response.text[:500]
         )
-
         return None
 
     try:
-
         runs = response.json().get(
             "workflow_runs",
             []
         )
-
     except Exception:
-
         return None
 
     for run in runs:
 
-        display_title = (
-            run.get("display_title")
-            or ""
-        )
+        display_title = run.get(
+            "display_title"
+        ) or ""
 
-        name = (
-            run.get("name")
-            or ""
-        )
+        run_name = run.get(
+            "run_name"
+        ) or ""
 
-        run_name = (
-            run.get("run_name")
-            or ""
-        )
+        name = run.get(
+            "name"
+        ) or ""
 
         if session_id in display_title:
             return run
 
-        if session_id in name:
+        if session_id in run_name:
             return run
 
-        if session_id in run_name:
+        if session_id in name:
             return run
 
     return None
 
 
 # ============================================================
-# GET GITHUB RUN
+# GET WORKFLOW RUN
 # ============================================================
 
 def get_workflow_run(run_id):
@@ -249,7 +190,6 @@ def get_workflow_run(run_id):
 
     try:
         return response.json()
-
     except Exception:
         return None
 
@@ -258,19 +198,12 @@ def get_workflow_run(run_id):
 # MONITOR GITHUB
 # ============================================================
 
-def monitor_session(
-    session_id
-):
+def monitor_session(session_id):
 
-    print("")
     print("=" * 60)
-    print("        SESSION MONITOR")
+    print("SESSION MONITOR")
+    print("SESSION:", session_id)
     print("=" * 60)
-
-    print(
-        "Session:",
-        session_id
-    )
 
     run_id = None
 
@@ -282,23 +215,16 @@ def monitor_session(
 
         with sessions_lock:
 
-            session = sessions.get(
-                session_id
-            )
+            session = sessions.get(session_id)
 
             if not session:
                 return
 
-            run_id = session.get(
-                "run_id"
-            )
+            if session.get("run_id"):
+                run_id = session["run_id"]
+                break
 
-        if run_id:
-            break
-
-        run = find_workflow_run(
-            session_id
-        )
+        run = find_workflow_run(session_id)
 
         if run:
 
@@ -306,31 +232,17 @@ def monitor_session(
 
             with sessions_lock:
 
-                session = sessions.get(
-                    session_id
-                )
+                session = sessions.get(session_id)
 
                 if session:
 
                     session["run_id"] = run_id
-
-                    session[
-                        "github_status"
-                    ] = run.get(
-                        "status"
-                    )
-
-                    session[
-                        "github_conclusion"
-                    ] = run.get(
+                    session["github_status"] = run.get("status")
+                    session["github_conclusion"] = run.get(
                         "conclusion"
                     )
 
-            print(
-                "GitHub Run found:",
-                run_id
-            )
-
+            print("GitHub Run:", run_id)
             break
 
         print(
@@ -345,17 +257,13 @@ def monitor_session(
 
         with sessions_lock:
 
-            session = sessions.get(
-                session_id
-            )
+            session = sessions.get(session_id)
 
             if session:
 
                 session["status"] = "error"
-
                 session["error"] = (
-                    "GitHub workflow run "
-                    "not found"
+                    "GitHub workflow run not found"
                 )
 
         return
@@ -366,130 +274,98 @@ def monitor_session(
 
     while True:
 
-        run = get_workflow_run(
-            run_id
-        )
+        run = get_workflow_run(run_id)
 
         if run is None:
 
             time.sleep(5)
-
             continue
 
-        status = run.get(
-            "status"
-        )
-
-        conclusion = run.get(
-            "conclusion"
-        )
+        status = run.get("status")
+        conclusion = run.get("conclusion")
 
         with sessions_lock:
 
-            session = sessions.get(
-                session_id
-            )
+            session = sessions.get(session_id)
 
             if not session:
                 return
 
-            session[
-                "github_status"
-            ] = status
+            session["github_status"] = status
+            session["github_conclusion"] = conclusion
 
-            session[
-                "github_conclusion"
-            ] = conclusion
+            worker_ready = bool(
+                session.get("worker_ready_at")
+            )
 
-            # اگر Worker آماده شده،
-            # وضعیت active را حفظ کن.
-            if (
-                session.get(
-                    "worker_ready_at"
-                )
-                and session["status"]
-                not in (
-                    "stopped",
-                    "expired"
-                )
-                and not is_expired(
-                    session
-                )
-            ):
+            if expired(session):
 
-                session[
-                    "status"
-                ] = "active"
+                session["status"] = "expired"
+
+                return
+
+            if worker_ready:
+
+                session["status"] = "active"
 
         print(
             "GitHub:",
             status,
             "|",
-            conclusion
+            conclusion,
+            "| worker_ready:",
+            worker_ready
         )
+
+        # ----------------------------------------------------
+        # WORKFLOW COMPLETED
+        # ----------------------------------------------------
 
         if status == "completed":
 
             with sessions_lock:
 
-                session = sessions.get(
-                    session_id
-                )
+                session = sessions.get(session_id)
 
                 if not session:
                     return
 
-                # Worker قبلاً آماده شده.
-                # اتمام GitHub workflow به تنهایی
-                # به معنی خطای Session نیست.
-                if session.get(
-                    "worker_ready_at"
-                ):
+                worker_ready = bool(
+                    session.get("worker_ready_at")
+                )
 
-                    if is_expired(
-                        session
-                    ):
+                if worker_ready:
 
-                        session[
-                            "status"
-                        ] = "expired"
+                    if expired(session):
 
-                    elif session[
-                        "status"
-                    ] != "stopped":
+                        session["status"] = "expired"
 
-                        session[
-                            "status"
-                        ] = "active"
+                    elif session["status"] != "stopped":
 
-                    return
+                        session["status"] = "active"
 
-                # Worker هرگز آماده نشده.
-                if conclusion == "success":
-
-                    session[
-                        "status"
-                    ] = "error"
-
-                    session[
-                        "error"
-                    ] = (
-                        "Workflow completed "
-                        "before GPU worker became ready"
+                    print(
+                        "Workflow finished but worker "
+                        "was already READY."
                     )
 
                 else:
 
-                    session[
-                        "status"
-                    ] = "error"
+                    session["status"] = "error"
 
-                    session[
-                        "error"
-                    ] = (
-                        "GitHub workflow failed: "
-                        + str(conclusion)
-                    )
+                    if conclusion == "success":
+
+                        session["error"] = (
+                            "Workflow completed before "
+                            "GPU worker became ready"
+                        )
+
+                    else:
+
+                        session["error"] = (
+                            "GitHub workflow failed: "
+                            + str(conclusion)
+                        )
 
             return
 
@@ -508,20 +384,14 @@ def start_session():
 
     session_id = (
         "session-"
-        + str(
-            int(
-                time.time()
-            )
-        )
+        + str(int(time.time()))
         + "-"
         + uuid.uuid4().hex[:8]
     )
 
-    worker_token = (
-        secrets.token_urlsafe(32)
-    )
+    worker_token = secrets.token_urlsafe(32)
 
-    created = time.time()
+    now = time.time()
 
     session = {
 
@@ -535,7 +405,7 @@ def start_session():
             utc_now(),
 
         "expires_at":
-            created + SESSION_SECONDS,
+            now + SESSION_SECONDS,
 
         "run_id":
             None,
@@ -550,6 +420,9 @@ def start_session():
             None,
 
         "compute_capability":
+            None,
+
+        "cuda_available":
             None,
 
         "worker_ready_at":
@@ -569,13 +442,10 @@ def start_session():
     }
 
     with sessions_lock:
-
-        sessions[
-            session_id
-        ] = session
+        sessions[session_id] = session
 
     # --------------------------------------------------------
-    # GITHUB DISPATCH
+    # DISPATCH GITHUB
     # --------------------------------------------------------
 
     url = (
@@ -604,15 +474,10 @@ def start_session():
         }
     }
 
-    print("")
     print("=" * 60)
-    print("          STARTING GPU SESSION")
+    print("START GPU SESSION")
+    print("SESSION:", session_id)
     print("=" * 60)
-
-    print(
-        "Session:",
-        session_id
-    )
 
     response = github_request(
         "POST",
@@ -624,30 +489,18 @@ def start_session():
 
         with sessions_lock:
 
-            session[
-                "status"
-            ] = "error"
-
-            session[
-                "error"
-            ] = (
+            session["status"] = "error"
+            session["error"] = (
                 "Could not connect to GitHub"
             )
 
         return jsonify(
-            public_session(
-                session
-            )
+            public_session(session)
         ), 500
 
     print(
         "GitHub HTTP:",
         response.status_code
-    )
-
-    print(
-        "GitHub response:",
-        response.text[:500]
     )
 
     if response.status_code not in (
@@ -659,22 +512,16 @@ def start_session():
 
         with sessions_lock:
 
-            session[
-                "status"
-            ] = "error"
+            session["status"] = "error"
 
-            session[
-                "error"
-            ] = (
+            session["error"] = (
                 "GitHub dispatch failed: "
                 f"{response.status_code} "
                 f"{response.text}"
             )
 
         return jsonify(
-            public_session(
-                session
-            )
+            public_session(session)
         ), 500
 
     threading.Thread(
@@ -684,10 +531,60 @@ def start_session():
     ).start()
 
     return jsonify(
-        public_session(
-            session
-        )
+        public_session(session)
     ), 202
+
+
+# ============================================================
+# GET SESSION STATUS
+# ============================================================
+
+@app.route(
+    "/gpu/session/<session_id>",
+    methods=["GET"]
+)
+def get_session(session_id):
+
+    with sessions_lock:
+
+        session = sessions.get(session_id)
+
+        if not session:
+
+            return jsonify({
+
+                "error":
+                    "Unknown session",
+
+                "session_id":
+                    session_id
+
+            }), 404
+
+        remaining = max(
+            0,
+            int(
+                session["expires_at"]
+                - time.time()
+            )
+        )
+
+        if (
+            remaining <= 0
+            and session["status"]
+            not in (
+                "error",
+                "stopped"
+            )
+        ):
+
+            session["status"] = "expired"
+
+        result = public_session(session)
+
+        result["remaining_seconds"] = remaining
+
+    return jsonify(result)
 
 
 # ============================================================
@@ -698,9 +595,7 @@ def start_session():
     "/gpu/session/<session_id>/worker-ready",
     methods=["POST"]
 )
-def worker_ready(
-    session_id
-):
+def worker_ready(session_id):
 
     data = request.get_json(
         silent=True
@@ -712,9 +607,7 @@ def worker_ready(
 
     with sessions_lock:
 
-        session = sessions.get(
-            session_id
-        )
+        session = sessions.get(session_id)
 
         if not session:
 
@@ -723,71 +616,48 @@ def worker_ready(
                     "Unknown session"
             }), 404
 
-        if token != session[
-            "worker_token"
-        ]:
+        if token != session["worker_token"]:
 
             return jsonify({
                 "error":
                     "Unauthorized"
             }), 403
 
-        # مهم:
-        # تایمر واقعی از لحظه READY شروع می‌شود.
-        session[
-            "expires_at"
-        ] = (
+        # ----------------------------------------------
+        # GPU READY
+        # ----------------------------------------------
+
+        session["status"] = "active"
+
+        # Timer starts when GPU actually becomes READY
+        session["expires_at"] = (
             time.time()
             + SESSION_SECONDS
         )
 
-        session[
-            "status"
-        ] = "active"
+        session["gpu"] = data.get("gpu")
 
-        session[
-            "gpu"
-        ] = data.get(
-            "gpu"
-        )
-
-        session[
-            "compute_capability"
-        ] = data.get(
+        session["compute_capability"] = data.get(
             "compute_capability"
         )
 
-        session[
-            "worker_ready_at"
-        ] = utc_now()
+        session["cuda_available"] = data.get(
+            "cuda_available"
+        )
 
-        session[
-            "error"
-        ] = None
+        session["worker_ready_at"] = utc_now()
 
-    print("")
+        session["error"] = None
+
     print("=" * 60)
-    print("             GPU WORKER READY")
+    print("GPU WORKER READY")
+    print("SESSION:", session_id)
+    print("GPU:", data.get("gpu"))
+    print(
+        "COMPUTE:",
+        data.get("compute_capability")
+    )
     print("=" * 60)
-
-    print(
-        "Session:",
-        session_id
-    )
-
-    print(
-        "GPU:",
-        data.get(
-            "gpu"
-        )
-    )
-
-    print(
-        "Compute:",
-        data.get(
-            "compute_capability"
-        )
-    )
 
     return jsonify({
 
@@ -798,7 +668,73 @@ def worker_ready(
             session_id,
 
         "worker_status":
-            "active"
+            "active",
+
+        "expires_in":
+            SESSION_SECONDS
+    })
+
+
+# ============================================================
+# WORKER HEARTBEAT
+# ============================================================
+
+@app.route(
+    "/gpu/session/<session_id>/heartbeat",
+    methods=["POST"]
+)
+def worker_heartbeat(session_id):
+
+    token = request.headers.get(
+        "X-Worker-Token"
+    )
+
+    with sessions_lock:
+
+        session = sessions.get(session_id)
+
+        if not session:
+
+            return jsonify({
+                "error":
+                    "Unknown session"
+            }), 404
+
+        if token != session["worker_token"]:
+
+            return jsonify({
+                "error":
+                    "Unauthorized"
+            }), 403
+
+        if expired(session):
+
+            session["status"] = "expired"
+
+            return jsonify({
+                "status":
+                    "expired"
+            }), 410
+
+        # Extend only while worker is alive
+        session["expires_at"] = (
+            time.time()
+            + SESSION_SECONDS
+        )
+
+        session["status"] = "active"
+
+    return jsonify({
+
+        "status":
+            "ok",
+
+        "session_id":
+            session_id,
+
+        "remaining_seconds":
+            SESSION_SECONDS
+
     })
 
 
@@ -810,9 +746,7 @@ def worker_ready(
     "/internal/session/<session_id>/command",
     methods=["GET"]
 )
-def worker_get_command(
-    session_id
-):
+def worker_get_command(session_id):
 
     token = request.headers.get(
         "X-Worker-Token"
@@ -820,9 +754,7 @@ def worker_get_command(
 
     with sessions_lock:
 
-        session = sessions.get(
-            session_id
-        )
+        session = sessions.get(session_id)
 
         if not session:
 
@@ -831,43 +763,40 @@ def worker_get_command(
                     "Unknown session"
             }), 404
 
-        if token != session[
-            "worker_token"
-        ]:
+        if token != session["worker_token"]:
 
             return jsonify({
                 "error":
                     "Unauthorized"
             }), 403
 
-        if is_expired(
-            session
-        ):
+        if expired(session):
 
-            session[
-                "status"
-            ] = "expired"
+            session["status"] = "expired"
 
             return jsonify({
+
                 "command":
                     None,
 
                 "expired":
                     True
+
             })
 
-        if not session[
-            "commands"
-        ]:
+        if not session["commands"]:
 
             return jsonify({
+
                 "command":
-                    None
+                    None,
+
+                "expired":
+                    False
+
             })
 
-        command = session[
-            "commands"
-        ].pop(0)
+        command = session["commands"].pop(0)
 
     return jsonify({
         "command":
@@ -883,9 +812,7 @@ def worker_get_command(
     "/internal/session/<session_id>/result",
     methods=["POST"]
 )
-def worker_result(
-    session_id
-):
+def worker_result(session_id):
 
     token = request.headers.get(
         "X-Worker-Token"
@@ -901,9 +828,7 @@ def worker_result(
 
     with sessions_lock:
 
-        session = sessions.get(
-            session_id
-        )
+        session = sessions.get(session_id)
 
         if not session:
 
@@ -912,9 +837,7 @@ def worker_result(
                     "Unknown session"
             }), 404
 
-        if token != session[
-            "worker_token"
-        ]:
+        if token != session["worker_token"]:
 
             return jsonify({
                 "error":
@@ -928,32 +851,28 @@ def worker_result(
                     "command_id missing"
             }), 400
 
-        session[
-            "results"
-        ][
-            command_id
-        ] = data
+        session["results"][command_id] = data
 
     return jsonify({
+
         "status":
             "received",
 
         "command_id":
             command_id
+
     })
 
 
 # ============================================================
-# QUEUE GPU JOB
+# QUEUE GPU COMMAND
 # ============================================================
 
 @app.route(
     "/gpu/session/<session_id>/command",
     methods=["POST"]
 )
-def queue_command(
-    session_id
-):
+def queue_command(session_id):
 
     data = request.get_json(
         silent=True
@@ -963,26 +882,16 @@ def queue_command(
         "operation"
     )
 
-    if operation not in (
-        "matrix",
-    ):
+    if not operation:
 
         return jsonify({
-
             "error":
-                "Unsupported operation",
-
-            "allowed":
-                [
-                    "matrix"
-                ]
+                "operation is required"
         }), 400
 
     with sessions_lock:
 
-        session = sessions.get(
-            session_id
-        )
+        session = sessions.get(session_id)
 
         if not session:
 
@@ -991,9 +900,16 @@ def queue_command(
                     "Unknown session"
             }), 404
 
-        if session[
-            "status"
-        ] != "active":
+        if expired(session):
+
+            session["status"] = "expired"
+
+            return jsonify({
+                "error":
+                    "Session expired"
+            }), 410
+
+        if session["status"] != "active":
 
             return jsonify({
 
@@ -1001,23 +917,9 @@ def queue_command(
                     "Session is not active",
 
                 "status":
-                    session[
-                        "status"
-                    ]
+                    session["status"]
+
             }), 409
-
-        if is_expired(
-            session
-        ):
-
-            session[
-                "status"
-            ] = "expired"
-
-            return jsonify({
-                "error":
-                    "Session expired"
-            }), 410
 
         command_id = (
             "cmd-"
@@ -1037,11 +939,10 @@ def queue_command(
 
             "created_at":
                 time.time()
+
         }
 
-        session[
-            "commands"
-        ].append(
+        session["commands"].append(
             command
         )
 
@@ -1052,11 +953,12 @@ def queue_command(
 
         "command_id":
             command_id
+
     }), 202
 
 
 # ============================================================
-# GET JOB RESULT
+# GET RESULT
 # ============================================================
 
 @app.route(
@@ -1070,9 +972,7 @@ def get_result(
 
     with sessions_lock:
 
-        session = sessions.get(
-            session_id
-        )
+        session = sessions.get(session_id)
 
         if not session:
 
@@ -1081,9 +981,7 @@ def get_result(
                     "Unknown session"
             }), 404
 
-        result = session[
-            "results"
-        ].get(
+        result = session["results"].get(
             command_id
         )
 
@@ -1109,26 +1007,23 @@ def get_result(
 
         "result":
             result
+
     })
 
 
 # ============================================================
-# STOP
+# STOP SESSION
 # ============================================================
 
 @app.route(
     "/gpu/session/<session_id>/stop",
     methods=["POST"]
 )
-def stop_session(
-    session_id
-):
+def stop_session(session_id):
 
     with sessions_lock:
 
-        session = sessions.get(
-            session_id
-        )
+        session = sessions.get(session_id)
 
         if not session:
 
@@ -1141,9 +1036,9 @@ def stop_session(
             "run_id"
         )
 
-        session[
-            "status"
-        ] = "stopped"
+        session["status"] = "stopped"
+
+        session["expires_at"] = time.time()
 
     if run_id:
 
@@ -1155,10 +1050,17 @@ def stop_session(
             f"{run_id}/cancel"
         )
 
-        github_request(
+        response = github_request(
             "POST",
             url
         )
+
+        if response is not None:
+
+            print(
+                "Cancel:",
+                response.status_code
+            )
 
     return jsonify({
 
@@ -1167,6 +1069,7 @@ def stop_session(
 
         "status":
             "stopped"
+
     })
 
 
@@ -1182,17 +1085,18 @@ def health():
 
     return jsonify({
 
-        "status":
-            "ok",
-
         "service":
             "GPU Session API",
+
+        "status":
+            "ok",
 
         "workflow":
             GITHUB_WORKFLOW,
 
         "session_seconds":
             SESSION_SECONDS
+
     })
 
 
@@ -1216,11 +1120,12 @@ def root():
 
         "session_seconds":
             SESSION_SECONDS
+
     })
 
 
 # ============================================================
-# MAIN
+# START
 # ============================================================
 
 if __name__ == "__main__":
@@ -1233,7 +1138,7 @@ if __name__ == "__main__":
     )
 
     print("=" * 60)
-    print("             GPU SESSION API")
+    print("GPU SESSION API")
     print("=" * 60)
 
     print(
@@ -1253,8 +1158,7 @@ if __name__ == "__main__":
 
     print(
         "Session:",
-        SESSION_SECONDS,
-        "seconds"
+        SESSION_SECONDS
     )
 
     app.run(
@@ -1262,4 +1166,4 @@ if __name__ == "__main__":
         port=port,
         debug=False,
         threaded=True
-        )
+    )
