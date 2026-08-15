@@ -463,7 +463,7 @@ def worker_result(session_id):
             return jsonify({"error": "command_id missing"}), 400
 
         session["results"][command_id] = data
-        
+
         # Also update global queue if exists
         with queue_lock:
             for cmd in command_queue:
@@ -471,11 +471,11 @@ def worker_result(session_id):
                     cmd["status"] = "completed"
                     cmd["result"] = data
                     break
-        
+
         return jsonify({"status": "received", "command_id": command_id})
 
 # ============================================================
-# QUEUE GPU COMMAND (IMPROVED)
+# QUEUE GPU COMMAND (UNIVERSAL - accepts ANY operation)
 # ============================================================
 
 @app.route("/gpu/session/<session_id>/command", methods=["POST"])
@@ -495,17 +495,18 @@ def queue_command(session_id):
             session["status"] = "expired"
             return jsonify({"error": "Session expired", "session_id": session_id}), 410
 
+        command_id = "cmd-" + uuid.uuid4().hex[:12]
+        command = {
+            "command_id": command_id,
+            "operation": operation,
+            "parameters": data,  # Pass the entire payload to worker
+            "created_at": time.time()
+        }
+
         if session["status"] != "active":
             # Queue for later execution when worker becomes ready
-            command_id = "cmd-" + uuid.uuid4().hex[:12]
-            command = {
-                "command_id": command_id,
-                "operation": operation,
-                "parameters": data,
-                "created_at": time.time(),
-                "session_id": session_id,
-                "status": "pending"
-            }
+            command["session_id"] = session_id
+            command["status"] = "pending"
             with queue_lock:
                 command_queue.append(command)
             return jsonify({
@@ -514,13 +515,6 @@ def queue_command(session_id):
                 "message": "Worker not ready yet. Command will execute when worker becomes active."
             }), 202
 
-        command_id = "cmd-" + uuid.uuid4().hex[:12]
-        command = {
-            "command_id": command_id,
-            "operation": operation,
-            "parameters": data,
-            "created_at": time.time()
-        }
         session["commands"].append(command)
 
     return jsonify({"status": "queued", "command_id": command_id}), 202
@@ -533,13 +527,13 @@ def queue_command(session_id):
 def get_result(session_id, command_id):
     with sessions_lock:
         session = sessions.get(session_id)
-        
+
         # Check session results
         if session:
             result = session["results"].get(command_id)
             if result is not None:
                 return jsonify({"status": "completed", "command_id": command_id, "result": result})
-        
+
         # Check global queue
         with queue_lock:
             for cmd in command_queue:
@@ -578,6 +572,23 @@ def stop_session(session_id):
     return jsonify({"session_id": session_id, "status": "stopped"})
 
 # ============================================================
+# LIST ALL SESSIONS
+# ============================================================
+
+@app.route("/gpu/sessions", methods=["GET"])
+def list_sessions():
+    with sessions_lock:
+        result = []
+        for sid, session in sessions.items():
+            pub = public_session(session)
+            pub["remaining_seconds"] = max(0, int(session["expires_at"] - time.time()))
+            result.append(pub)
+        return jsonify({
+            "count": len(result),
+            "sessions": result
+        })
+
+# ============================================================
 # HEALTH
 # ============================================================
 
@@ -599,6 +610,15 @@ def root():
     return jsonify({
         "service": "GPU Session API",
         "status": "online",
+        "endpoints": {
+            "start_session": "POST /gpu/session/start",
+            "get_session": "GET /gpu/session/<session_id>",
+            "list_sessions": "GET /gpu/sessions",
+            "queue_command": "POST /gpu/session/<session_id>/command",
+            "get_result": "GET /gpu/session/<session_id>/result/<command_id>",
+            "stop_session": "POST /gpu/session/<session_id>/stop",
+            "health": "GET /health"
+        },
         "session_seconds": SESSION_SECONDS
     })
 
